@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  ai_proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BRANCH_NAME: ${BRANCH_NAME:-main}
+        BUILD_NUMBER: ${BUILD_NUMBER:-0}
+    image: ai_proxy:latest
+    container_name: ai_proxy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Almaty
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    driver: bridge

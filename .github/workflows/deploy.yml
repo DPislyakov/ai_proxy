@@ -1,0 +1,78 @@
+name: Deploy LLM Proxy
+
+on:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare target directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -euxo pipefail
+            mkdir -p /opt/ai_proxy
+            chown ${{ secrets.SERVER_USER }}:${{ secrets.SERVER_USER }} /opt/ai_proxy
+
+      - name: Upload repository to server
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "./"
+          target: "/opt/ai_proxy/"
+          overwrite: true
+          strip_components: 0
+          exclude: ".git,.github,.gitignore,.env"
+          rm: false
+
+      - name: Deploy with Docker
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          timeout: 10m
+          command_timeout: 10m
+          script: |
+            set -euxo pipefail
+            cd /opt/ai_proxy
+
+            # Check .env exists
+            if [ ! -f .env ]; then
+              echo "❌ ERROR: .env file not found!"
+              exit 1
+            fi
+
+            # Build and deploy
+            export BRANCH_NAME="main"
+            export BUILD_NUMBER="${{ github.run_number }}"
+
+            docker compose build --no-cache ai_proxy
+            docker compose up -d ai_proxy
+
+            # Cleanup
+            docker image prune -f || true
+
+            # Status
+            echo "=== Deployment successful ==="
+            docker compose ps
+            docker compose logs --tail=30 ai_proxy
