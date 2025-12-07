@@ -28,9 +28,11 @@ var httpClient = &http.Client{
 
 func main() {
 	app := fiber.New(fiber.Config{
-		ReadTimeout:  720 * time.Second,
-		WriteTimeout: 720 * time.Second,
-		BodyLimit:    50 * 1024 * 1024, // 50MB
+		ReadTimeout:       720 * time.Second,
+		WriteTimeout:      720 * time.Second,
+		IdleTimeout:       720 * time.Second,
+		BodyLimit:         50 * 1024 * 1024, // 50MB
+		StreamRequestBody: true,
 	})
 
 	// Middleware
@@ -82,7 +84,7 @@ func main() {
 
 func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Получаем путь после префикса (например /openai/v1/chat/completions -> /v1/chat/completions)
+		// Получаем путь после префикса
 		path := c.Params("*")
 		targetURL := targetBase + "/" + path
 
@@ -106,7 +108,7 @@ func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
 			})
 		}
 
-		// Копируем заголовки (кроме Host и Authorization)
+		// Копируем заголовки
 		for k, v := range c.GetReqHeaders() {
 			if k == "Host" || k == "Authorization" || k == "X-Proxy-Auth" {
 				continue
@@ -141,19 +143,47 @@ func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
 
 		c.Status(resp.StatusCode)
 
-		// Если streaming - передаём построчно
+		// Если streaming - передаём SSE корректно
 		if isStreaming && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 			c.Set("Content-Type", "text/event-stream")
 			c.Set("Cache-Control", "no-cache")
 			c.Set("Connection", "keep-alive")
+			c.Set("X-Accel-Buffering", "no") // Отключаем буферизацию nginx
 
 			c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-				scanner := bufio.NewScanner(resp.Body)
-				for scanner.Scan() {
-					line := scanner.Text()
-					w.WriteString(line + "\n")
-					w.Flush()
+				reader := bufio.NewReader(resp.Body)
+				var bytesWritten int64
+
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						if err != io.EOF {
+							log.Printf("Stream read error: %v (after %d bytes)", err, bytesWritten)
+						}
+						break
+					}
+
+					// Пишем строку как есть (включая \n)
+					n, err := w.WriteString(line)
+					if err != nil {
+						log.Printf("Stream write error: %v", err)
+						break
+					}
+					bytesWritten += int64(n)
+
+					// КРИТИЧНО: flush после каждой строки для SSE
+					if err := w.Flush(); err != nil {
+						log.Printf("Stream flush error: %v", err)
+						break
+					}
+
+					// Дополнительный flush для пустых строк (разделитель событий SSE)
+					if strings.TrimSpace(line) == "" {
+						w.Flush()
+					}
 				}
+
+				log.Printf("Stream completed: %d bytes written", bytesWritten)
 			})
 			return nil
 		}
