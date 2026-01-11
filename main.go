@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	OpenAIBase   = "https://api.openai.com"
-	NebiusBase   = "https://api.studio.nebius.ai"
-	DeepSeekBase = "https://api.deepseek.com"
+	OpenAIBase    = "https://api.openai.com"
+	NebiusBase    = "https://api.studio.nebius.ai"
+	DeepSeekBase  = "https://api.deepseek.com"
+	AnthropicBase = "https://api.anthropic.com"
 )
 
 var httpClient = &http.Client{
@@ -63,13 +64,16 @@ func main() {
 	})
 
 	// OpenAI routes
-	app.All("/openai/*", proxyHandler(OpenAIBase, "OPENAI_API_KEY"))
+	app.All("/openai/*", proxyHandler(OpenAIBase, "OPENAI_API_KEY", "openai"))
 
 	// Nebius routes
-	app.All("/nebius/*", proxyHandler(NebiusBase, "NEBIUS_API_KEY"))
+	app.All("/nebius/*", proxyHandler(NebiusBase, "NEBIUS_API_KEY", "nebius"))
 
 	// DeepSeek routes
-	app.All("/deepseek/*", proxyHandler(DeepSeekBase, "DEEPSEEK_API_KEY"))
+	app.All("/deepseek/*", proxyHandler(DeepSeekBase, "DEEPSEEK_API_KEY", "deepseek"))
+
+	// Anthropic routes
+	app.All("/anthropic/*", proxyHandler(AnthropicBase, "ANTHROPIC_API_KEY", "anthropic"))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -82,7 +86,7 @@ func main() {
 	}
 }
 
-func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
+func proxyHandler(targetBase, apiKeyEnv, provider string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Получаем путь после префикса
 		path := c.Params("*")
@@ -110,7 +114,7 @@ func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
 
 		// Копируем заголовки
 		for k, v := range c.GetReqHeaders() {
-			if k == "Host" || k == "Authorization" || k == "X-Proxy-Auth" {
+			if k == "Host" || k == "Authorization" || k == "X-Proxy-Auth" || k == "X-Api-Key" {
 				continue
 			}
 			for _, val := range v {
@@ -118,8 +122,17 @@ func proxyHandler(targetBase, apiKeyEnv string) fiber.Handler {
 			}
 		}
 
-		// Добавляем API ключ
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		// Добавляем API ключ в зависимости от провайдера
+		if provider == "anthropic" {
+			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+			// Добавляем beta header для structured outputs если нужно
+			if c.Get("anthropic-beta") != "" {
+				req.Header.Set("anthropic-beta", c.Get("anthropic-beta"))
+			}
+		} else {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		// Проверяем, streaming ли запрос
